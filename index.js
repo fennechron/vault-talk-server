@@ -113,22 +113,80 @@ app.post('/api/messages', async (req, res) => {
     const docRef = await addDoc(collection(db, 'messages', recipientId, 'inbox'), newMessage);
     console.log(`[POST] New encrypted message stored in Firestore subcollection: ${docRef.id}`);
 
-    // If this is a reply, mark the original message as replied
-    if (replyToId && senderId) {
-      try {
-        const originalMsgRef = doc(db, 'messages', senderId, 'inbox', replyToId);
-        await updateDoc(originalMsgRef, { isReplied: true });
-        console.log(`[POST] Marked original message ${replyToId} as replied for user ${senderId}`);
-      } catch (err) {
-        console.error('Failed to mark original message as replied:', err);
-        // We don't fail the whole request if this update fails, but we log it
-      }
-    }
+    // Removed reply tracking logic
     
     res.status(201).json({ id: docRef.id, ...newMessage });
   } catch (error) {
     console.error('Firestore Error (POST /api/messages):', error);
     res.status(500).json({ error: 'Failed to store message in database' });
+  }
+});
+
+/**
+ * POST /api/messages/report
+ * Flags an existing message for administrative review.
+ */
+app.post('/api/messages/report', async (req, res) => {
+  const { messageId, recipientId, text, senderId } = req.body;
+
+  if (!messageId || !recipientId) {
+    return res.status(400).json({ error: 'messageId and recipientId are required' });
+  }
+
+  try {
+    const reportDoc = {
+      messageId,
+      recipientId,
+      senderId: senderId || 'anonymous',
+      text: text || 'encrypted', // The decrypted text sent from the client or the encrypted string if un-decrypted
+      reportedAt: serverTimestamp(),
+    };
+
+    const docRef = await addDoc(collection(db, 'reported'), reportDoc);
+    
+    // Update original message to show it is reported
+    try {
+      const originalMsgRef = doc(db, 'messages', recipientId, 'inbox', messageId);
+      await updateDoc(originalMsgRef, { isReported: true });
+      console.log(`[POST] Marked message ${messageId} as reported in inbox of user ${recipientId}`);
+    } catch (err) {
+      console.error(`Failed to mark original message ${messageId} as reported:`, err);
+    }
+    
+    console.log('\n--- URGENT: MESSAGE REPORTED ---');
+    console.log(`Report ID: ${docRef.id}`);
+    console.log(`Original Message ID: ${messageId}`);
+    console.log(`Recipient: ${recipientId}`);
+    console.log(`Sender: ${reportDoc.senderId}`);
+    console.log(`Message Content: ${text}`);
+    console.log('--------------------------------\n');
+
+    res.status(201).json({ id: docRef.id, ...reportDoc });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/messages/report):', error);
+    res.status(500).json({ error: 'Failed to submit report' });
+  }
+});
+
+/**
+ * GET /api/admin/reports
+ * Fetches all reported messages for administrative review.
+ */
+app.get('/api/admin/reports', async (req, res) => {
+  try {
+    const q = query(
+      collection(db, 'reported'),
+      orderBy('reportedAt', 'desc')
+    );
+    
+    const snapshot = await getDocs(q);
+    const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    console.log(`[GET] Fetched ${reports.length} reports for admin review.`);
+    res.json(reports);
+  } catch (error) {
+    console.error('Firestore Error (GET /api/admin/reports):', error);
+    res.status(500).json({ error: 'Failed to fetch reports' });
   }
 });
 
@@ -138,5 +196,7 @@ app.listen(PORT, () => {
   console.log(`Available Endpoints:
   - GET  /api/messages?recipientId={uid}
   - POST /api/messages
+  - POST /api/messages/report
+  - GET  /api/admin/reports
   `);
 });
