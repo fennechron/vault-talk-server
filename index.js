@@ -52,7 +52,7 @@ const db = getFirestore(firebaseApp);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'vaulttalk-default-secret-key';
+const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-key';
 
 // Middleware
 app.use(cors());
@@ -382,7 +382,7 @@ app.delete('/api/notifications', async (req, res) => {
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`VaultTalk Backend is running on http://localhost:${PORT}`);
+  console.log(`Whisp Backend is running on http://localhost:${PORT}`);
   console.log(`Available Endpoints:
   - GET  /api/messages?recipientId={uid}
   - POST /api/messages
