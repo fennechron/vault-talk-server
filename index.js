@@ -78,7 +78,12 @@ app.get('/api/messages', async (req, res) => {
 
     const snapshot = await getDocs(q);
     const userMessages = snapshot.docs
-      .map(doc => ({ id: doc.id, ...doc.data() }))
+      .map(doc => {
+        const data = doc.data();
+        // Remove senderId from the data returned to the receiver
+        const { senderId, ...rest } = data;
+        return { id: doc.id, ...rest };
+      })
       .sort((a, b) => {
         // Manual sort to avoid Firestore index requirement for now
         const dateA = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : new Date(a.createdAt || 0);
@@ -127,7 +132,8 @@ app.post('/api/messages', async (req, res) => {
 
     // Removed reply tracking logic
 
-    res.status(201).json({ id: docRef.id, ...newMessage });
+    const { senderId: _, ...safeMessage } = newMessage;
+    res.status(201).json({ id: docRef.id, ...safeMessage });
   } catch (error) {
     console.error('Firestore Error (POST /api/messages):', error);
     res.status(500).json({ error: 'Failed to store message in database' });
@@ -378,16 +384,6 @@ app.delete('/api/notifications', async (req, res) => {
     console.error('Firestore Error (DELETE /api/notifications):', error);
     res.status(500).json({ error: 'Failed to clear notifications' });
   }
-});
-
-
-app.get("/status", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptime: process.uptime(),
-    message: "Server is running",
-    timestamp: new Date()
-  });
 });
 
 // Start the server
