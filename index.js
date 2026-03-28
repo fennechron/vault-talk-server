@@ -55,8 +55,38 @@ const PORT = process.env.PORT || 3000;
 const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-key';
 
 // Middleware
-app.use(cors());
 app.use(bodyParser.json());
+
+/**
+ * Hashes the sender ID using HMAC-SHA256 with the encryption key as salt.
+ * Used for notification bucket identifiers.
+ */
+const hashSenderId = (id) => {
+  if (!id || id === 'anonymous') return 'anonymous';
+  return CryptoJS.HmacSHA256(id, ENCRYPTION_KEY).toString();
+};
+
+/**
+ * Encrypts the sender ID using AES.
+ */
+const encryptSenderId = (id) => {
+  if (!id || id === 'anonymous') return 'anonymous';
+  return CryptoJS.AES.encrypt(id, ENCRYPTION_KEY).toString();
+};
+
+/**
+ * Decrypts the sender ID using AES.
+ */
+const decryptSenderId = (ciphertext) => {
+  if (!ciphertext || ciphertext === 'anonymous') return 'anonymous';
+  try {
+    const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
+    return bytes.toString(CryptoJS.enc.Utf8);
+  } catch (err) {
+    console.error('Decryption of senderId failed:', err);
+    return 'anonymous';
+  }
+};
 
 /**
  * GET /api/messages
@@ -117,7 +147,7 @@ app.post('/api/messages', async (req, res) => {
 
     const newMessage = {
       recipientId,
-      senderId: senderId || 'anonymous',
+      senderId: encryptSenderId(senderId),
       text: encryptedText,
       replyToId: replyToId || null,
       createdAt: serverTimestamp(),
@@ -229,9 +259,12 @@ app.post('/api/messages/like', async (req, res) => {
     // Create notification for sender
     const msgSnap = await getDoc(msgRef);
     if (msgSnap.exists()) {
-      const senderId = msgSnap.data().senderId;
-      if (senderId && senderId !== 'anonymous') {
-        const notifRef = doc(db, 'notifications', senderId, 'items', messageId);
+      const storedSenderId = msgSnap.data().senderId;
+      const originalSenderId = decryptSenderId(storedSenderId);
+
+      if (originalSenderId && originalSenderId !== 'anonymous') {
+        const hashedId = hashSenderId(originalSenderId);
+        const notifRef = doc(db, 'notifications', hashedId, 'items', messageId);
         await setDoc(notifRef, {
           type: 'like',
           recipientId,
@@ -271,9 +304,12 @@ app.post('/api/messages/react', async (req, res) => {
     // Create notification for sender
     const msgSnap = await getDoc(msgRef);
     if (msgSnap.exists()) {
-      const senderId = msgSnap.data().senderId;
-      if (senderId && senderId !== 'anonymous') {
-        const notifRef = doc(db, 'notifications', senderId, 'items', messageId);
+      const storedSenderId = msgSnap.data().senderId;
+      const originalSenderId = decryptSenderId(storedSenderId);
+
+      if (originalSenderId && originalSenderId !== 'anonymous') {
+        const hashedId = hashSenderId(originalSenderId);
+        const notifRef = doc(db, 'notifications', hashedId, 'items', messageId);
         await setDoc(notifRef, {
           type: 'reaction',
           reaction: reaction,
@@ -344,11 +380,12 @@ app.get('/api/notifications', async (req, res) => {
   }
 
   try {
-    const notifsRef = collection(db, 'notifications', senderId, 'items');
+    const hashedId = hashSenderId(senderId);
+    const notifsRef = collection(db, 'notifications', hashedId, 'items');
     const snapshot = await getDocs(notifsRef);
     const notifications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-    console.log(`[GET] Fetched ${notifications.length} notifications for sender ${senderId}`);
+    console.log(`[GET] Fetched ${notifications.length} notifications for sender (hashed) ${hashedId}`);
     res.json(notifications);
   } catch (error) {
     console.error('Firestore Error (GET /api/notifications):', error);
@@ -368,7 +405,8 @@ app.delete('/api/notifications', async (req, res) => {
   }
 
   try {
-    const notifsRef = collection(db, 'notifications', senderId, 'items');
+    const hashedId = hashSenderId(senderId);
+    const notifsRef = collection(db, 'notifications', hashedId, 'items');
     const snapshot = await getDocs(notifsRef);
 
     const batch = writeBatch(db);
@@ -378,7 +416,7 @@ app.delete('/api/notifications', async (req, res) => {
 
     await batch.commit();
 
-    console.log(`[DELETE] Cleared ${snapshot.size} notifications for sender ${senderId}`);
+    console.log(`[DELETE] Cleared ${snapshot.size} notifications for sender (hashed) ${hashedId}`);
     res.json({ success: true });
   } catch (error) {
     console.error('Firestore Error (DELETE /api/notifications):', error);
