@@ -76,15 +76,17 @@ const encryptSenderId = (id) => {
 
 /**
  * Decrypts the sender ID using AES.
+ * Fallbacks to original ciphertext if decryption fails (supports legacy data).
  */
 const decryptSenderId = (ciphertext) => {
   if (!ciphertext || ciphertext === 'anonymous') return 'anonymous';
   try {
     const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
-    return bytes.toString(CryptoJS.enc.Utf8);
+    const decrypted = bytes.toString(CryptoJS.enc.Utf8);
+    // If decryption succeeds and returns something, use it. Otherwise, assume legacy format.
+    return decrypted || ciphertext;
   } catch (err) {
-    console.error('Decryption of senderId failed:', err);
-    return 'anonymous';
+    return ciphertext;
   }
 };
 
