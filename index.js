@@ -55,6 +55,14 @@ const PORT = process.env.PORT || 3000;
 const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-key';
 
 // Middleware
+app.use(cors({
+  origin: [
+    'https://whisp.fennechron.com',
+    'http://localhost:5173',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(bodyParser.json());
 
 /**
