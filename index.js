@@ -59,6 +59,7 @@ app.use(cors({
   origin: [
     'https://whisp.fennechron.com',
     'http://localhost:5173',
+    'http://127.0.0.1:5173'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -83,19 +84,55 @@ const encryptSenderId = (id) => {
 };
 
 /**
- * Decrypts the sender ID using AES.
- * Fallbacks to original ciphertext if decryption fails (supports legacy data).
+ * Decrypts any AES encrypted string.
  */
-const decryptSenderId = (ciphertext) => {
-  if (!ciphertext || ciphertext === 'anonymous') return 'anonymous';
+const decrypt = (ciphertext) => {
+  if (!ciphertext || ciphertext === 'anonymous') return ciphertext;
   try {
     const bytes = CryptoJS.AES.decrypt(ciphertext, ENCRYPTION_KEY);
     const decrypted = bytes.toString(CryptoJS.enc.Utf8);
-    // If decryption succeeds and returns something, use it. Otherwise, assume legacy format.
     return decrypted || ciphertext;
   } catch (err) {
     return ciphertext;
   }
+};
+
+/**
+ * Decrypts the sender ID using AES.
+ * Fallbacks to original ciphertext if decryption fails (supports legacy data).
+ */
+const decryptSenderId = (ciphertext) => {
+  return decrypt(ciphertext);
+};
+
+/**
+ * Admin authentication middleware.
+ */
+const isAdmin = (req, res, next) => {
+  const adminPassword = req.headers['authorization'];
+  if (adminPassword === process.env.ADMIN_PASSWORD) {
+    next();
+  } else {
+    res.status(401).json({ error: 'Unauthorized: Admin access required' });
+  }
+};
+
+/**
+ * Checks if a user is blocked.
+ */
+const isUserBlocked = async (userId) => {
+  if (!userId || userId === 'anonymous') return false;
+  try {
+    const decryptedId = decryptSenderId(userId);
+    const infractionRef = doc(db, 'infractions', decryptedId);
+    const infractionSnap = await getDoc(infractionRef);
+    if (infractionSnap.exists()) {
+      return infractionSnap.data().isBlocked === true;
+    }
+  } catch (error) {
+    console.error('Error checking block status:', error);
+  }
+  return false;
 };
 
 /**
@@ -151,6 +188,11 @@ app.post('/api/messages', async (req, res) => {
     return res.status(400).json({ error: 'recipientId and text are required' });
   }
 
+  // Check if sender is blocked
+  if (await isUserBlocked(senderId)) {
+    return res.status(403).json({ error: 'Your account has been disabled due to violations of community standards.' });
+  }
+
   try {
     // Encrypt the message text
     const encryptedText = CryptoJS.AES.encrypt(text, ENCRYPTION_KEY).toString();
@@ -192,11 +234,30 @@ app.post('/api/messages/report', async (req, res) => {
   }
 
   try {
+    // 1. Fetch the original message to get the true senderId
+    const originalMsgRef = doc(db, 'messages', recipientId, 'inbox', messageId);
+    const originalMsgSnap = await getDoc(originalMsgRef);
+
+    if (!originalMsgSnap.exists()) {
+      return res.status(404).json({ error: 'Original message not found' });
+    }
+
+    const { senderId: originalSenderId, "send id": altSenderId, text: originalEncryptedText } = originalMsgSnap.data();
+
+    // Use 'send id' if senderId is missing, as per user's request
+    const encryptedIdToDecrypt = originalSenderId || altSenderId;
+
+    console.log(`[REPORT DEBUG] Original Message Data:`, originalMsgSnap.data());
+    console.log(`[REPORT DEBUG] Found senderId: ${originalSenderId}, Found send id: ${altSenderId}`);
+
+    const decryptedSenderId = decryptSenderId(encryptedIdToDecrypt);
+    const decryptedText = decrypt(originalEncryptedText); // Decrypt from source of truth
+
     const reportDoc = {
       messageId,
       recipientId,
-      senderId: senderId || 'anonymous',
-      text: text || 'encrypted', // The decrypted text sent from the client or the encrypted string if un-decrypted
+      senderId: decryptedSenderId || 'anonymous',
+      text: decryptedText || 'encrypted',
       reportedAt: serverTimestamp(),
     };
 
@@ -204,7 +265,6 @@ app.post('/api/messages/report', async (req, res) => {
 
     // Update original message to show it is reported
     try {
-      const originalMsgRef = doc(db, 'messages', recipientId, 'inbox', messageId);
       await updateDoc(originalMsgRef, { isReported: true });
       console.log(`[POST] Marked message ${messageId} as reported in inbox of user ${recipientId}`);
     } catch (err) {
@@ -215,8 +275,8 @@ app.post('/api/messages/report', async (req, res) => {
     console.log(`Report ID: ${docRef.id}`);
     console.log(`Original Message ID: ${messageId}`);
     console.log(`Recipient: ${recipientId}`);
-    console.log(`Sender: ${reportDoc.senderId}`);
-    console.log(`Message Content: ${text}`);
+    console.log(`Sender (Decrypted): ${reportDoc.senderId}`);
+    console.log(`Message Content (Decrypted): ${decryptedText}`);
     console.log('--------------------------------\n');
 
     res.status(201).json({ id: docRef.id, ...reportDoc });
@@ -227,10 +287,37 @@ app.post('/api/messages/report', async (req, res) => {
 });
 
 /**
+ * GET /api/my-infractions
+ * Allows a user to check their own warning/block status.
+ * Query: ?userId={id} (email or tempId)
+ */
+app.get('/api/my-infractions', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+  try {
+    const infractionRef = doc(db, 'infractions', userId);
+    const docSnap = await getDoc(infractionRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      res.json({
+        warnings: data.warnings || 0,
+        isBlocked: data.isBlocked || false
+      });
+    } else {
+      res.json({ warnings: 0, isBlocked: false });
+    }
+  } catch (error) {
+    console.error('Error fetching my infractions:', error);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+/**
  * GET /api/admin/reports
  * Fetches all reported messages for administrative review.
  */
-app.get('/api/admin/reports', async (req, res) => {
+app.get('/api/admin/reports', isAdmin, async (req, res) => {
   try {
     const q = query(
       collection(db, 'reported'),
@@ -238,13 +325,110 @@ app.get('/api/admin/reports', async (req, res) => {
     );
 
     const snapshot = await getDocs(q);
-    const reports = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const reports = await Promise.all(snapshot.docs.map(async (docSnap) => {
+      const data = docSnap.data();
+      let senderId = data.senderId;
+      let text = data.text;
 
-    console.log(`[GET] Fetched ${reports.length} reports for admin review.`);
+      // Try to fetch latest sender info from original message if current is anonymous or missing
+      try {
+        const originalMsgRef = doc(db, 'messages', data.recipientId, 'inbox', data.messageId);
+        const originalMsgSnap = await getDoc(originalMsgRef);
+        if (originalMsgSnap.exists()) {
+          const msgData = originalMsgSnap.data();
+          const encryptedId = msgData.senderId || msgData["send id"];
+          if (encryptedId && encryptedId !== 'anonymous') {
+            senderId = decryptSenderId(encryptedId);
+          }
+          const encryptedText = msgData.text;
+          if (encryptedText) {
+            text = decrypt(encryptedText);
+          }
+        }
+      } catch (err) {
+        console.error(`Error enriching report ${docSnap.id}:`, err);
+      }
+
+      return { id: docSnap.id, ...data, senderId, text };
+    }));
+
+    console.log(`[GET] Fetched and enriched ${reports.length} reports for admin review.`);
     res.json(reports);
   } catch (error) {
     console.error('Firestore Error (GET /api/admin/reports):', error);
     res.status(500).json({ error: 'Failed to fetch reports' });
+  }
+});
+
+/**
+ * POST /api/admin/warning
+ * Increments the warning count for a user.
+ */
+app.post('/api/admin/warning', isAdmin, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+  try {
+    const infractionRef = doc(db, 'infractions', userId);
+    const infractionSnap = await getDoc(infractionRef);
+
+    if (infractionSnap.exists()) {
+      await updateDoc(infractionRef, {
+        warnings: increment(1),
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      await setDoc(infractionRef, {
+        warnings: 1,
+        isBlocked: false,
+        updatedAt: serverTimestamp()
+      });
+    }
+    res.json({ success: true, message: 'Warning issued successfully' });
+  } catch (error) {
+    console.error('Error issuing warning:', error);
+    res.status(500).json({ error: 'Failed to issue warning' });
+  }
+});
+
+/**
+ * POST /api/admin/block
+ * Blocks a user from sending messages.
+ */
+app.post('/api/admin/block', isAdmin, async (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+  try {
+    const infractionRef = doc(db, 'infractions', userId);
+    await setDoc(infractionRef, {
+      isBlocked: true,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+    res.json({ success: true, message: 'User blocked successfully' });
+  } catch (error) {
+    console.error('Error blocking user:', error);
+    res.status(500).json({ error: 'Failed to block user' });
+  }
+});
+
+/**
+ * GET /api/admin/infractions/:userId
+ * Fetches infraction data for a specific user.
+ */
+app.get('/api/admin/infractions/:userId', isAdmin, async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const infractionRef = doc(db, 'infractions', userId);
+    const docSnap = await getDoc(infractionRef);
+    if (docSnap.exists()) {
+      res.json(docSnap.data());
+    } else {
+      res.json({ warnings: 0, isBlocked: false });
+    }
+  } catch (error) {
+    console.error('Error fetching infractions:', error);
+    res.status(500).json({ error: 'Failed' });
   }
 });
 
