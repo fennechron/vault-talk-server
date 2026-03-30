@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import CryptoJS from 'crypto-js';
+import admin from 'firebase-admin';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -50,6 +51,11 @@ console.log('- App ID:', process.env.VITE_FIREBASE_APP_ID ? 'Exists (starts with
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 
+// Initialize Firebase Admin for token verification
+admin.initializeApp({
+  projectId: firebaseConfig.projectId,
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-key';
@@ -57,7 +63,7 @@ const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-
 // Middleware
 app.use(cors({
   origin: [
-    // 'https://whisp.fennechron.com',
+    'https://whisp.fennechron.com',
     'http://localhost:5173',
     'http://127.0.0.1:5173'
   ],
@@ -114,6 +120,26 @@ const isAdmin = (req, res, next) => {
     next();
   } else {
     res.status(401).json({ error: 'Unauthorized: Admin access required' });
+  }
+};
+
+/**
+ * Firebase ID Token verification middleware.
+ */
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+
+  const idToken = authHeader.split('Bearer ')[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    console.error('Error verifying token:', error);
+    res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 };
 
@@ -181,8 +207,13 @@ app.get('/api/messages', async (req, res) => {
  * Sends a new anonymous message.
  * Body: { recipientId, senderId, text, replyToId? }
  */
-app.post('/api/messages', async (req, res) => {
+app.post('/api/messages', verifyToken, async (req, res) => {
   const { recipientId, senderId, text, replyToId } = req.body;
+
+  // Ensure the senderId matches the authenticated user in the token
+  if (req.user.email !== senderId) {
+    return res.status(403).json({ error: 'Forbidden: Sender identity mismatch' });
+  }
 
   if (!recipientId || !text) {
     return res.status(400).json({ error: 'recipientId and text are required' });
@@ -191,6 +222,11 @@ app.post('/api/messages', async (req, res) => {
   // Check if sender is blocked
   if (await isUserBlocked(senderId)) {
     return res.status(403).json({ error: 'Your account has been disabled due to violations of community standards.' });
+  }
+
+  // Enforce sign-in: Reject guest messages (temp_ IDs)
+  if (senderId && senderId.startsWith('temp_')) {
+    return res.status(401).json({ error: 'Authentication required. Please sign in to send messages.' });
   }
 
   try {
