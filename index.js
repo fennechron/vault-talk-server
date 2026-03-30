@@ -57,7 +57,7 @@ const ENCRYPTION_KEY = process.env.VITE_ENCRYPTION_KEY || 'whisp-default-secret-
 // Middleware
 app.use(cors({
   origin: [
-    'https://whisp.fennechron.com',
+    // 'https://whisp.fennechron.com',
     'http://localhost:5173',
     'http://127.0.0.1:5173'
   ],
