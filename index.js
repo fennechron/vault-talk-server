@@ -801,6 +801,10 @@ app.get('/api/paper-balls/catch', async (req, res) => {
   }
 });
 
+app.get('/',(req,res)=>{
+  res.status(200).json({health:'Iam Ok'});
+});
+
 // Start the server
 app.listen(PORT, () => {
   console.log(`Whisp Backend is running on http://localhost:${PORT}`);
