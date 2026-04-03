@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import { initializeApp } from 'firebase/app';
 import {
   getFirestore, collection, addDoc, getDocs, query, where, orderBy, serverTimestamp,
-  doc, updateDoc, increment, writeBatch, getDoc, setDoc
+  doc, updateDoc, increment, writeBatch, getDoc, setDoc, deleteDoc
 } from 'firebase/firestore';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -469,6 +469,90 @@ app.get('/api/admin/infractions/:userId', isAdmin, async (req, res) => {
 });
 
 /**
+ * DELETE /api/admin/messages
+ * Deletes a message from a user's inbox and marks the report as deleted (Admin only).
+ * Body: { recipientId, messageId, reportId }
+ */
+app.delete('/api/admin/messages', isAdmin, async (req, res) => {
+  const { recipientId, messageId, reportId } = req.body;
+
+  if (!recipientId || !messageId) {
+    return res.status(400).json({ error: 'recipientId and messageId are required' });
+  }
+
+  try {
+    const msgRef = doc(db, 'messages', recipientId, 'inbox', messageId);
+
+    // 1. Delete message from inbox
+    try {
+      await deleteDoc(msgRef);
+      console.log(`[ADMIN DELETE] Message ${messageId} deleted from user ${recipientId} inbox`);
+    } catch (err) {
+      console.warn(`[ADMIN DELETE] Message ${messageId} already gone or failed to delete:`, err.message);
+    }
+
+    // 2. Mark report as deleted
+    if (reportId) {
+      const reportRef = doc(db, 'reported', reportId);
+      await updateDoc(reportRef, { isMessageDeleted: true });
+      console.log(`[ADMIN DELETE] Report ${reportId} marked as message deleted.`);
+    }
+
+    res.json({ success: true, message: 'Message deleted and report updated' });
+  } catch (error) {
+    console.error('Firestore Error (DELETE /api/admin/messages):', error);
+    res.status(500).json({ error: 'Failed to complete deletion process' });
+  }
+});
+
+/**
+ * DELETE /api/admin/reports/clear
+ * Deletes ALL messages that have been reported from their respective inboxes and marks reports as deleted.
+ * Admin only.
+ */
+app.delete('/api/admin/reports/clear', isAdmin, async (req, res) => {
+  try {
+    const reportedRef = collection(db, 'reported');
+    const snapshot = await getDocs(reportedRef);
+
+    if (snapshot.empty) {
+      return res.json({ success: true, message: 'No reports to clear' });
+    }
+
+    const batch = writeBatch(db);
+    let count = 0;
+
+    for (const reportDoc of snapshot.docs) {
+      const data = reportDoc.data();
+      const { recipientId, messageId } = data;
+
+      // Only process if not already deleted
+      if (!data.isMessageDeleted) {
+        if (recipientId && messageId) {
+          const msgRef = doc(db, 'messages', recipientId, 'inbox', messageId);
+          batch.delete(msgRef);
+          count++;
+        }
+
+        // Mark the report as deleted instead of deleting it
+        batch.update(reportDoc.ref, { isMessageDeleted: true });
+      }
+    }
+
+    await batch.commit();
+
+    console.log(`[ADMIN CLEAR ALL] Deleted ${count} reported messages and marked reports as deleted.`);
+    res.json({
+      success: true,
+      message: `Successfully deleted ${count} messages and updated moderation status.`
+    });
+  } catch (error) {
+    console.error('Firestore Error (DELETE /api/admin/reports/clear):', error);
+    res.status(500).json({ error: 'Failed to clear messages and update reports' });
+  }
+});
+
+/**
  * POST /api/messages/like
  * Increments the like count for a specific message.
  * Body: { recipientId, messageId }
@@ -651,6 +735,69 @@ app.delete('/api/notifications', async (req, res) => {
   } catch (error) {
     console.error('Firestore Error (DELETE /api/notifications):', error);
     res.status(500).json({ error: 'Failed to clear notifications' });
+  }
+});
+
+/**
+ * POST /api/paper-balls/throw
+ * Throws a new paper ball into the global pool.
+ * Body: { text, senderId }
+ */
+app.post('/api/paper-balls/throw', async (req, res) => {
+  const { text, senderId } = req.body;
+
+  if (!text) {
+    return res.status(400).json({ error: 'Message text is required' });
+  }
+
+  try {
+    const encryptedText = CryptoJS.AES.encrypt(text, ENCRYPTION_KEY).toString();
+    const newPaperBall = {
+      text: encryptedText,
+      senderId: senderId ? encryptSenderId(senderId) : 'anonymous',
+      createdAt: serverTimestamp(),
+      isCaught: false // Keep for legacy/potential future use, but not enforcing single catch
+    };
+
+    const docRef = await addDoc(collection(db, 'paperBalls'), newPaperBall);
+    console.log(`[PAPER BALL] New paper ball thrown: ${docRef.id}`);
+    res.status(201).json({ id: docRef.id, success: true });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/paper-balls/throw):', error);
+    res.status(500).json({ error: 'Failed to throw paper ball' });
+  }
+});
+
+/**
+ * GET /api/paper-balls/catch
+ * Catches a random paper ball from the global pool.
+ */
+app.get('/api/paper-balls/catch', async (req, res) => {
+  try {
+    const paperBallsRef = collection(db, 'paperBalls');
+    const snapshot = await getDocs(paperBallsRef);
+
+    if (snapshot.empty) {
+      return res.status(404).json({ error: 'No paper balls found in the pool' });
+    }
+
+    // Get a random index
+    const randomIndex = Math.floor(Math.random() * snapshot.docs.length);
+    const selectedDoc = snapshot.docs[randomIndex];
+    const data = selectedDoc.data();
+
+    // Decrypt the text
+    const decryptedText = decrypt(data.text);
+
+    console.log(`[PAPER BALL] Paper ball ${selectedDoc.id} caught`);
+    res.json({
+      id: selectedDoc.id,
+      text: decryptedText,
+      createdAt: data.createdAt
+    });
+  } catch (error) {
+    console.error('Firestore Error (GET /api/paper-balls/catch):', error);
+    res.status(500).json({ error: 'Failed to catch paper ball' });
   }
 });
 
