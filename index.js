@@ -793,7 +793,9 @@ app.get('/api/paper-balls/catch', async (req, res) => {
     res.json({
       id: selectedDoc.id,
       text: decryptedText,
-      createdAt: data.createdAt
+      createdAt: data.createdAt,
+      likes: data.likes || 0,
+      dislikes: data.dislikes || 0
     });
   } catch (error) {
     console.error('Firestore Error (GET /api/paper-balls/catch):', error);
@@ -801,8 +803,80 @@ app.get('/api/paper-balls/catch', async (req, res) => {
   }
 });
 
-app.get('/',(req,res)=>{
-  res.status(200).json({health:'Iam Ok'});
+/**
+ * POST /api/paper-balls/:id/like
+ * Increments the like count for a global paper ball.
+ */
+app.post('/api/paper-balls/:id/like', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const ballRef = doc(db, 'paperBalls', id);
+    await updateDoc(ballRef, {
+      likes: increment(1)
+    });
+    console.log(`[PAPER BALL] Paper ball ${id} liked`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/paper-balls/:id/like):', error);
+    res.status(500).json({ error: 'Failed to like paper ball' });
+  }
+});
+
+/**
+ * POST /api/paper-balls/:id/dislike
+ * Increments the dislike count for a global paper ball.
+ */
+app.post('/api/paper-balls/:id/dislike', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const ballRef = doc(db, 'paperBalls', id);
+    await updateDoc(ballRef, {
+      dislikes: increment(1)
+    });
+    console.log(`[PAPER BALL] Paper ball ${id} disliked`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/paper-balls/:id/dislike):', error);
+    res.status(500).json({ error: 'Failed to dislike paper ball' });
+  }
+});
+
+/**
+ * POST /api/paper-balls/:id/unlike
+ * Decrements the like count for a global paper ball.
+ */
+app.post('/api/paper-balls/:id/unlike', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const ballRef = doc(db, 'paperBalls', id);
+    await updateDoc(ballRef, {
+      likes: increment(-1)
+    });
+    console.log(`[PAPER BALL] Paper ball ${id} unliked`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/paper-balls/:id/unlike):', error);
+    res.status(500).json({ error: 'Failed to unlike paper ball' });
+  }
+});
+
+/**
+ * POST /api/paper-balls/:id/undislike
+ * Decrements the dislike count for a global paper ball.
+ */
+app.post('/api/paper-balls/:id/undislike', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const ballRef = doc(db, 'paperBalls', id);
+    await updateDoc(ballRef, {
+      dislikes: increment(-1)
+    });
+    console.log(`[PAPER BALL] Paper ball ${id} undisliked`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Firestore Error (POST /api/paper-balls/:id/undislike):', error);
+    res.status(500).json({ error: 'Failed to undislike paper ball' });
+  }
 });
 
 // Start the server
